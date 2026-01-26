@@ -44,3 +44,15 @@ jobs:
         with:
           name: diocesis-logs
           path: logs/
+
+      - name: Add log summary
+        if: always()
+        run: |
+          echo "## Diocesis Log (tail)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f logs/diocesis.log ]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 200 logs/diocesis.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No log file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
