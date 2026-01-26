@@ -1,5 +1,6 @@
 import os
 import ssl
+import time
 import certifi
 import feedparser
 import logging
@@ -369,6 +370,7 @@ def wait_for_edit_enabled(wait, button):
 def main():
     require_env()
     logger = setup_logger()
+    logger.info("timezone=%s utc_offset_seconds=%s", time.tzname, -time.timezone)
     logger.info("inicio_ejecucion")
 
     # 2. Obtener el video mas reciente
