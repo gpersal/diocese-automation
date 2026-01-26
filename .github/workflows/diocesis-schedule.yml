@@ -21,6 +21,9 @@ jobs:
       DIOCESIS_LOG_LEVEL: INFO
       DIOCESIS_VIDEO_WIDTH: "840"
       DIOCESIS_VIDEO_HEIGHT: "472"
+      DIOCESIS_PAGE_LOAD_TIMEOUT: "180"
+      DIOCESIS_GET_RETRIES: "3"
+      DIOCESIS_GET_RETRY_WAIT: "5"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

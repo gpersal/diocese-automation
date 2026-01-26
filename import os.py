@@ -21,6 +21,9 @@ LOGIN_URL = "https://admin.diocesisdeneiva.org/auth/login?callbackUrl=%2Fdashboa
 DIOS_HOY_URL = "https://admin.diocesisdeneiva.org/espiritualidad/dios-hoy"
 YOUTUBE_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id=UCydLv78Ybqcg2y74FR2VYIw"
 DEFAULT_TIMEOUT = int(os.getenv("DIOCESIS_TIMEOUT", "15"))
+PAGE_LOAD_TIMEOUT = int(os.getenv("DIOCESIS_PAGE_LOAD_TIMEOUT", "90"))
+GET_RETRIES = int(os.getenv("DIOCESIS_GET_RETRIES", "2"))
+GET_RETRY_WAIT = float(os.getenv("DIOCESIS_GET_RETRY_WAIT", "3"))
 VIDEO_URL_SELECTOR = os.getenv(
     "DIOCESIS_VIDEO_URL_SELECTOR",
     "input[type='url'], input[placeholder*='Embed']",
@@ -103,6 +106,22 @@ class RedactFilter(logging.Filter):
 
 def log_phase(logger, message):
     logger.info("fase=%s", message)
+
+def safe_get(driver, url, logger, label=None):
+    max_attempts = max(1, GET_RETRIES + 1)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info("navegar url=%s intento=%s", label or url, attempt)
+            driver.get(url)
+            return
+        except (TimeoutException, WebDriverException) as exc:
+            if attempt >= max_attempts:
+                raise
+            try:
+                driver.execute_script("window.stop();")
+            except WebDriverException:
+                pass
+            time.sleep(GET_RETRY_WAIT)
 
 def safe_click(driver, element):
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
@@ -387,15 +406,20 @@ def main():
 
     # 3. Lanzar el navegador (asegurate de tener chromedriver instalado y en PATH)
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # opcional: ejecuta en modo sin interfaz
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.page_load_strategy = "eager"
     options.add_argument("--window-size=1400,900")
     driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     wait = WebDriverWait(driver, DEFAULT_TIMEOUT)
 
     try:
         # 4. Iniciar sesión en el panel
         log_phase(logger, "login")
-        driver.get(LOGIN_URL)
+        safe_get(driver, LOGIN_URL, logger, "login")
         wait.until(EC.visibility_of_element_located((By.ID, "email"))).send_keys(USERNAME)
         driver.find_element(By.ID, "password").send_keys(PASSWORD)
         driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
@@ -406,7 +430,7 @@ def main():
         except TimeoutException as exc:
             raise RuntimeError("No se pudo iniciar sesion en el panel.") from exc
         log_phase(logger, "navegar_dios_hoy")
-        driver.get(DIOS_HOY_URL)
+        safe_get(driver, DIOS_HOY_URL, logger, "dios_hoy")
 
         # 6. Seleccionar la fecha actual
         today = datetime.now().day
