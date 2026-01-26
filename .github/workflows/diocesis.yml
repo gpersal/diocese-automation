@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "0 6-11 * * *" # 01:00-06:00 America/Bogota (UTC-5)
     - cron: "*/5 * * * *" # Prueba puntual 10:45 America/Bogota (UTC-5)
+    - cron: "06 12 * * *"
   workflow_dispatch:
 
 jobs:
