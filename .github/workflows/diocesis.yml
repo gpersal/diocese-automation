@@ -37,3 +37,10 @@ jobs:
       - name: Run script
         run: |
           python "import os.py"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diocesis-logs
+          path: logs/
