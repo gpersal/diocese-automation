@@ -1,0 +1,39 @@
+name: diocesis-dios-hoy
+
+on:
+  schedule:
+    - cron: "0 6-11 * * *" # 01:00-06:00 America/Bogota (UTC-5)
+    - cron: "5 15 * * *" # Prueba puntual 10:05 America/Bogota (UTC-5)
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TZ: America/Bogota
+      DIOCESIS_USERNAME: ${{ secrets.DIOCESIS_USERNAME }}
+      DIOCESIS_PASSWORD: ${{ secrets.DIOCESIS_PASSWORD }}
+      DIOCESIS_LOG_DIR: ${{ github.workspace }}/logs
+      DIOCESIS_LOG_LEVEL: INFO
+      DIOCESIS_VIDEO_WIDTH: "840"
+      DIOCESIS_VIDEO_HEIGHT: "472"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install feedparser selenium certifi
+
+      - name: Run script
+        run: |
+          python "import os.py"
