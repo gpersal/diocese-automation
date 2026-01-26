@@ -2,9 +2,8 @@ name: diocesis-dios-hoy
 
 on:
   schedule:
-    - cron: "0 6-11 * * *" # 01:00-06:00 America/Bogota (UTC-5)
-    - cron: "*/5 * * * *" # Prueba puntual 10:45 America/Bogota (UTC-5)
-    - cron: "06 12 * * *"
+    - cron: "3 6-11 * * *" 
+    - cron: "3/5 * * * *"
   workflow_dispatch:
 
 jobs:
