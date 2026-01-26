@@ -80,8 +80,25 @@ def setup_logger():
             "%(asctime)s %(levelname)s [%(name)s] %(message)s"
         )
         handler.setFormatter(formatter)
+        secrets = [USERNAME, PASSWORD]
+        handler.addFilter(RedactFilter(secrets))
         logger.addHandler(handler)
     return logger
+
+class RedactFilter(logging.Filter):
+    def __init__(self, secrets):
+        super().__init__()
+        self.secrets = [secret for secret in secrets if secret]
+
+    def filter(self, record):
+        if not self.secrets:
+            return True
+        message = record.getMessage()
+        for secret in self.secrets:
+            message = message.replace(secret, "***")
+        record.msg = message
+        record.args = ()
+        return True
 
 def log_phase(logger, message):
     logger.info("fase=%s", message)
