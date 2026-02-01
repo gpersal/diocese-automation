@@ -3,9 +3,6 @@ name: diocesis-dios-hoy
 on:
   schedule:
     - cron: "3 6-11 * * *" 
-    - cron: "3 20 * * *"
-    - cron: "7 15 * * *"
-    # - cron: "3/5 * * * *"
   workflow_dispatch:
 
 jobs:
