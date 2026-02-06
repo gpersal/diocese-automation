@@ -30,7 +30,7 @@ EVANGELIO_TIMEOUT = int(os.getenv("DIOCESIS_EVANGELIO_TIMEOUT", "45"))
 EVANGELIO_RETRIES = int(os.getenv("DIOCESIS_EVANGELIO_RETRIES", "1"))
 EVANGELIO_DIRECT_URL = os.getenv(
     "DIOCESIS_EVANGELIO_URL",
-    f"{DIOS_HOY_URL}/evangelios-y-santo/evangelium",
+    "https://admin.diocesisdeneiva.org/espiritualidad/evangelios",
 )
 VIDEO_URL_SELECTOR = os.getenv(
     "DIOCESIS_VIDEO_URL_SELECTOR",
@@ -192,10 +192,10 @@ def infer_evangelio_url(driver):
 def find_evangelio_link(driver):
     wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
     selectors = [
-        (By.CSS_SELECTOR, "a[href*='/evangelios-y-santo/evangelium']"),
-        (By.XPATH, "//a[contains(@href,'/evangelios-y-santo')]"),
-        (By.XPATH, "//*[self::a or self::button][contains(normalize-space(),'Evangelio') and contains(normalize-space(),'santo')]"),
-        (By.XPATH, "//*[contains(normalize-space(),'Evangelio') and contains(normalize-space(),'santo')]/ancestor::a[1]"),
+        (By.CSS_SELECTOR, "a[href*='/espiritualidad/evangelios']"),
+        (By.XPATH, "//a[contains(@href,'/espiritualidad/evangelios')]"),
+        (By.XPATH, "//*[self::a or self::button][normalize-space()='Evangelios']"),
+        (By.XPATH, "//*[normalize-space()='Evangelios']/ancestor::a[1]"),
     ]
     last_error = None
     for by, selector in selectors:
@@ -208,7 +208,10 @@ def find_evangelio_link(driver):
 def wait_for_evangelio_section(driver):
     wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
     return wait.until(
-        EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']"))
+        EC.any_of(
+            EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']")),
+            EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios disponibles']")),
+        )
     )
 
 def find_editor_root(editor):
