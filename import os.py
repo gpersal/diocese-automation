@@ -1,12 +1,13 @@
 import os
 import ssl
+import re
 import time
 import certifi
 import feedparser
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urljoin
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -24,8 +25,13 @@ DEFAULT_TIMEOUT = int(os.getenv("DIOCESIS_TIMEOUT", "15"))
 PAGE_LOAD_TIMEOUT = int(os.getenv("DIOCESIS_PAGE_LOAD_TIMEOUT", "90"))
 GET_RETRIES = int(os.getenv("DIOCESIS_GET_RETRIES", "2"))
 GET_RETRY_WAIT = float(os.getenv("DIOCESIS_GET_RETRY_WAIT", "3"))
+LOGIN_TIMEOUT = int(os.getenv("DIOCESIS_LOGIN_TIMEOUT", "45"))
 EVANGELIO_TIMEOUT = int(os.getenv("DIOCESIS_EVANGELIO_TIMEOUT", "45"))
 EVANGELIO_RETRIES = int(os.getenv("DIOCESIS_EVANGELIO_RETRIES", "1"))
+EVANGELIO_DIRECT_URL = os.getenv(
+    "DIOCESIS_EVANGELIO_URL",
+    f"{DIOS_HOY_URL}/evangelios-y-santo/evangelium",
+)
 VIDEO_URL_SELECTOR = os.getenv(
     "DIOCESIS_VIDEO_URL_SELECTOR",
     "input[type='url'], input[placeholder*='Embed']",
@@ -151,11 +157,21 @@ def do_login(driver, wait, logger):
     wait.until(EC.visibility_of_element_located((By.ID, "email"))).send_keys(USERNAME)
     driver.find_element(By.ID, "password").send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+    login_wait = WebDriverWait(driver, LOGIN_TIMEOUT)
     try:
-        wait.until(EC.url_contains("/dashboard"))
+        login_wait.until(
+            EC.any_of(
+                EC.url_contains("/dashboard"),
+                EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/espiritualidad']")),
+            )
+        )
     except TimeoutException as exc:
+        current_url = driver.current_url
+        page_lower = (driver.page_source or "").lower()
+        if "captcha" in page_lower or "recaptcha" in page_lower:
+            logger.warning("posible_captcha_detectado url=%s", current_url)
         dump_debug_artifacts(driver, logger, "login_timeout")
-        raise RuntimeError("No se pudo iniciar sesion en el panel.") from exc
+        raise RuntimeError(f"No se pudo iniciar sesion en el panel. url={current_url}") from exc
 
 def find_day_button(driver, wait, day):
     buttons = wait.until(
@@ -165,6 +181,13 @@ def find_day_button(driver, wait, day):
         if button.is_displayed() and button.is_enabled():
             return button
     raise RuntimeError(f"No se encontro el boton del dia {day}.")
+
+def infer_evangelio_url(driver):
+    source = driver.page_source or ""
+    match = re.search(r"href=[\"']([^\"']*evangelios-y-santo[^\"']*)[\"']", source)
+    if not match:
+        return None
+    return match.group(1)
 
 def find_evangelio_link(driver):
     wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
@@ -181,6 +204,12 @@ def find_evangelio_link(driver):
         except TimeoutException as exc:
             last_error = exc
     raise last_error if last_error else TimeoutException("No se encontro el enlace de evangelio.")
+
+def wait_for_evangelio_section(driver):
+    wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
+    return wait.until(
+        EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']"))
+    )
 
 def find_editor_root(editor):
     try:
@@ -484,20 +513,31 @@ def main():
                 logger.warning("sesion_expirada url=%s", current_url)
                 do_login(driver, wait, logger)
                 safe_get(driver, DIOS_HOY_URL, logger, "dios_hoy_relogin")
+            target_url = None
             try:
                 evangelio_link = find_evangelio_link(driver)
+                target_url = evangelio_link.get_attribute("href")
+            except TimeoutException:
+                inferred = infer_evangelio_url(driver)
+                target_url = inferred or EVANGELIO_DIRECT_URL
+                if target_url and target_url.startswith("/"):
+                    target_url = urljoin(DIOS_HOY_URL, target_url)
+                logger.warning("no_se_encontro_enlace_evangelio intento=%s url=%s usando_url_directa=%s", attempt + 1, driver.current_url, target_url)
+                dump_debug_artifacts(driver, logger, f"evangelio_link_{attempt + 1}")
+            safe_get(driver, target_url, logger, f"evangelio_santo_{attempt + 1}")
+            try:
+                wait_for_evangelio_section(driver)
                 break
             except TimeoutException:
-                logger.warning("no_se_encontro_enlace_evangelio intento=%s url=%s", attempt + 1, driver.current_url)
-                dump_debug_artifacts(driver, logger, f"evangelio_link_{attempt + 1}")
+                logger.warning("no_se_confirmo_evangelio intento=%s url=%s", attempt + 1, driver.current_url)
+                dump_debug_artifacts(driver, logger, f"evangelio_section_{attempt + 1}")
                 if attempt < EVANGELIO_RETRIES:
                     safe_get(driver, DIOS_HOY_URL, logger, f"dios_hoy_reintento_{attempt + 1}")
                 else:
                     raise
         if not evangelio_link:
-            raise RuntimeError("No se pudo encontrar el enlace de Evangelio y santo.")
-        safe_get(driver, evangelio_link.get_attribute("href"), logger, "evangelio_santo")
-
+            logger.warning("no_se_pudo_confirmar_enlace_evangelio url=%s", driver.current_url)
+        
         # 8. Seleccionar el evangelio actual y habilitar "Editar reflexion"
         log_phase(logger, "seleccionar_evangelio_actual")
         current_evangelio = find_current_gospel_button(driver, wait)
