@@ -205,14 +205,49 @@ def find_evangelio_link(driver):
             last_error = exc
     raise last_error if last_error else TimeoutException("No se encontro el enlace de evangelio.")
 
-def wait_for_evangelio_section(driver):
+def detect_evangelio_page(driver):
     wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
-    return wait.until(
-        EC.any_of(
-            EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']")),
-            EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios disponibles']")),
-        )
-    )
+    def _check(_):
+        if find_visible_by_xpath(driver, "//*[normalize-space()='Evangelios actuales']"):
+            return 'dios_hoy'
+        if find_visible_by_xpath(driver, "//*[normalize-space()='Evangelios disponibles']"):
+            return 'dios_hoy'
+        if find_visible_by_xpath(driver, "//*[contains(normalize-space(),'Agregar evangelio')]"):
+            return 'list'
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/espiritualidad/evangelios/'][href$='/editar']")
+        for link in links:
+            if link.is_displayed():
+                return 'list'
+        if find_visible_by_xpath(driver, "//h1[contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'evangelios')]"):
+            return 'list'
+        return False
+    return wait.until(_check)
+
+def find_first_evangelio_edit_link(driver):
+    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/espiritualidad/evangelios/'][href$='/editar']")
+    for link in links:
+        if link.is_displayed() and link.is_enabled():
+            return link
+    raise RuntimeError('No se encontro un enlace Editar en la lista de evangelios.')
+
+def log_evangelio_card_info(logger, link):
+    try:
+        card = link.find_element(By.XPATH, 'ancestor::li[1]')
+    except NoSuchElementException:
+        card = None
+    title = None
+    reference = None
+    if card:
+        try:
+            title = card.find_element(By.CSS_SELECTOR, 'h1, h2, h3, h4').text
+        except NoSuchElementException:
+            pass
+        try:
+            reference = card.find_element(By.CSS_SELECTOR, 'span.text-ecclesiaBlue').text
+        except NoSuchElementException:
+            pass
+    if title or reference:
+        logger.info('evangelio_seleccionado titulo=%s referencia=%s', title, reference)
 
 def find_editor_root(editor):
     try:
@@ -224,6 +259,12 @@ def find_editor_root(editor):
 
 def find_visible_by_css(driver, selector):
     for element in driver.find_elements(By.CSS_SELECTOR, selector):
+        if element.is_displayed():
+            return element
+    return None
+
+def find_visible_by_xpath(driver, xpath):
+    for element in driver.find_elements(By.XPATH, xpath):
         if element.is_displayed():
             return element
     return None
@@ -509,6 +550,7 @@ def main():
 
         # 7. Acceder a "Evangelio y santo"
         log_phase(logger, "abrir_evangelio_santo")
+        page_type = None
         evangelio_link = None
         for attempt in range(EVANGELIO_RETRIES + 1):
             current_url = driver.current_url or ""
@@ -529,7 +571,11 @@ def main():
                 dump_debug_artifacts(driver, logger, f"evangelio_link_{attempt + 1}")
             safe_get(driver, target_url, logger, f"evangelio_santo_{attempt + 1}")
             try:
-                wait_for_evangelio_section(driver)
+                page_type = detect_evangelio_page(driver)
+                if page_type == "list":
+                    edit_link = find_first_evangelio_edit_link(driver)
+                    log_evangelio_card_info(logger, edit_link)
+                    safe_click(driver, edit_link)
                 break
             except TimeoutException:
                 logger.warning("no_se_confirmo_evangelio intento=%s url=%s", attempt + 1, driver.current_url)
@@ -542,18 +588,22 @@ def main():
             logger.warning("no_se_pudo_confirmar_enlace_evangelio url=%s", driver.current_url)
         
         # 8. Seleccionar el evangelio actual y habilitar "Editar reflexion"
-        log_phase(logger, "seleccionar_evangelio_actual")
-        current_evangelio = find_current_gospel_button(driver, wait)
-        safe_click(driver, current_evangelio)
+        editor = find_visible_by_css(driver, "div[contenteditable='true']")
+        if editor is None:
+            log_phase(logger, "seleccionar_evangelio_actual")
+            current_evangelio = find_current_gospel_button(driver, wait)
+            safe_click(driver, current_evangelio)
 
-        editar_reflexion_button = find_edit_reflection_button(wait)
-        wait_for_edit_enabled(wait, editar_reflexion_button)
-        safe_click(driver, editar_reflexion_button)
+            editar_reflexion_button = find_edit_reflection_button(wait)
+            wait_for_edit_enabled(wait, editar_reflexion_button)
+            safe_click(driver, editar_reflexion_button)
 
-        # 9. Insertar el vídeo en el editor:
-        # Esperar a que aparezca el área de edición
-        log_phase(logger, "abrir_editor")
-        editor = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div[contenteditable='true']")))
+            # 9. Insertar el vídeo en el editor:
+            # Esperar a que aparezca el área de edición
+            log_phase(logger, "abrir_editor")
+            editor = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div[contenteditable='true']")))
+        else:
+            log_phase(logger, "abrir_editor")
         log_phase(logger, "insertar_video")
         embed_url = build_embed_url(video_id, video_url)
         if normalize_existing_video(driver, editor, video_id, embed_url):
