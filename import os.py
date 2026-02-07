@@ -121,6 +121,9 @@ def _redact_debug_html(html):
     # Avoid leaking session/JWT tokens or similar secrets in uploaded artifacts.
     html = re.sub(r'"token"\s*:\s*"[^"]+"', '"token":"***"', html)
     html = re.sub(r'eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+', '***', html)
+    # Basic PII redaction (best-effort).
+    html = re.sub(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '***@***', html)
+    html = re.sub(r'\b\d{7,}\b', '***', html)
     return html
 
 def dump_debug_artifacts(driver, logger, label):
