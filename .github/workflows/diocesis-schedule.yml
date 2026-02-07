@@ -18,6 +18,7 @@ jobs:
       DIOCESIS_PASSWORD: ${{ secrets.DIOCESIS_PASSWORD }}
       DIOCESIS_LOG_DIR: ${{ github.workspace }}/logs
       DIOCESIS_LOG_LEVEL: INFO
+      DIOCESIS_VIDEO_TITLE_REGEX: "gotitas\\s+de\\s+esperanza"
       DIOCESIS_VIDEO_WIDTH: "840"
       DIOCESIS_VIDEO_HEIGHT: "472"
       DIOCESIS_EVANGELIO_TIMEOUT: "60"
