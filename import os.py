@@ -9,6 +9,7 @@ from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse, urljoin, urlsplit, urlunsplit
 import sys
+import unicodedata
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -44,17 +45,45 @@ LOG_DIR = os.getenv("DIOCESIS_LOG_DIR", "/Users/gabops/Downloads/Diocesis/logs")
 LOG_LEVEL = os.getenv("DIOCESIS_LOG_LEVEL", "INFO").upper()
 
 def get_latest_video_url():
-    """Devuelve la URL del vídeo más reciente del feed."""
+    """Devuelve la URL del vídeo más reciente del feed.
+
+    Si hay un patrón de título, intenta elegir el último que coincida.
+    """
     ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
     feed = feedparser.parse(YOUTUBE_FEED)
     if feed.bozo:
         raise RuntimeError(f"Error al leer el feed de YouTube: {feed.bozo_exception}")
     if not feed.entries:
         raise RuntimeError("El feed de YouTube no tiene entradas.")
-    latest_entry = feed.entries[0]
-    if not getattr(latest_entry, "link", None):
+    title_pattern = os.getenv("DIOCESIS_VIDEO_TITLE_REGEX", r"gotitas\\s+de\\s+esperanza")
+    try:
+        title_re = re.compile(title_pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise RuntimeError("DIOCESIS_VIDEO_TITLE_REGEX invalido.") from exc
+
+    def _norm(text):
+        if not text:
+            return ""
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        return text.lower()
+
+    logger = logging.getLogger("diocesis")
+    chosen = None
+    for entry in feed.entries:
+        title = getattr(entry, "title", "") or ""
+        if title_re.search(_norm(title)):
+            chosen = entry
+            logger.info("video_seleccionado titulo=%s", title)
+            break
+    if chosen is None:
+        chosen = feed.entries[0]
+        title = getattr(chosen, "title", "") or ""
+        logger.info("video_seleccionado_fallback titulo=%s", title)
+
+    if not getattr(chosen, "link", None):
         raise RuntimeError("La entrada mas reciente no tiene enlace.")
-    return latest_entry.link  # esto devuelve https://www.youtube.com/watch?v=VIDEO_ID
+    return chosen.link  # esto devuelve https://www.youtube.com/watch?v=VIDEO_ID
 
 def extract_video_id(url):
     parsed = urlparse(url)
