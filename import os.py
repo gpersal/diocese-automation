@@ -7,7 +7,7 @@ import feedparser
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
-from urllib.parse import parse_qs, urlparse, urljoin
+from urllib.parse import parse_qs, urlparse, urljoin, urlsplit, urlunsplit
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -194,29 +194,160 @@ def find_day_button(driver, wait, day):
     raise RuntimeError(f"No se encontro el boton del dia {day}.")
 
 def infer_evangelio_url(driver):
+    """
+    Try to infer the *day-specific* 'Evangelio y santo' URL from the Dios Hoy DOM.
+    Prefer links that include 'dios-hoy' to avoid landing on the global /espiritualidad/evangelios list.
+    """
     source = driver.page_source or ""
-    match = re.search(r"href=[\"']([^\"']*evangelios-y-santo[^\"']*)[\"']", source)
-    if not match:
-        return None
-    return match.group(1)
-def open_evangelio_santo(driver, logger):
-    # Click the day-specific 'Evangelio y santo' entry inside Dios Hoy (not the sidebar).
-    wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
+    patterns = [
+        r"href=[\"']([^\"']*dios-hoy[^\"']*evangelios-y-santo[^\"']*)[\"']",
+        r"href=[\"']([^\"']*dios-hoy[^\"']*(?:evangelio|santo)[^\"']*)[\"']",
+        r"href=[\"']([^\"']*evangelios-y-santo[^\"']*)[\"']",
+    ]
+    for pat in patterns:
+        match = re.search(pat, source, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+def _strip_url(url):
+    try:
+        parts = urlsplit(url)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    except Exception:
+        return url
+
+def _is_not_found_page(driver):
+    try:
+        title = (driver.title or "").lower()
+        if "404" in title and "not" in title and "found" in title:
+            return True
+    except WebDriverException:
+        pass
+    try:
+        src = driver.page_source or ""
+        return "This page could not be found" in src or "404: This page could not be found" in src
+    except WebDriverException:
+        return False
+
+def _wait_for_evangelio_dios_hoy_page(driver, timeout):
+    local_wait = WebDriverWait(driver, timeout)
+    return local_wait.until(
+        EC.any_of(
+            EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']")),
+            EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios disponibles']")),
+        )
+    )
+
+def _log_candidate_evangelio_links(driver, logger, limit=25):
+    try:
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href]")
+    except WebDriverException:
+        return
+    out = []
+    for a in links:
+        try:
+            if not a.is_displayed():
+                continue
+            if a.find_elements(By.XPATH, "ancestor::aside"):
+                continue
+            href = (a.get_attribute("href") or "").strip()
+            txt = (a.text or "").strip()
+            if not href:
+                continue
+            hay = f"{txt} {href}".lower()
+            if "dios-hoy" not in hay and "evangel" not in hay and "santo" not in hay:
+                continue
+            out.append((txt[:80], _strip_url(href)))
+        except WebDriverException:
+            continue
+        if len(out) >= limit:
+            break
+    if out:
+        logger.info("links_candidatos_evangelio count=%s sample=%s", len(out), out[:10])
+
+def open_evangelio_santo(driver, wait, logger, day):
+    """
+    Open the day-specific 'Evangelio y santo' section from within Dios Hoy.
+
+    Avoids the common false positive: landing on /espiritualidad/evangelios (global list).
+    """
+    start_url_stripped = _strip_url(driver.current_url)
+
+    def _reset_context(tag):
+        logger.info("reset_contexto_dios_hoy intento=%s", tag)
+        safe_get(driver, DIOS_HOY_URL, logger, f"dios_hoy_reset_{tag}")
+        day_button = find_day_button(driver, wait, day)
+        safe_click(driver, day_button)
+
+    inferred = infer_evangelio_url(driver)
+    if inferred:
+        target = inferred
+        if target.startswith("/"):
+            target = urljoin(DIOS_HOY_URL, target)
+        logger.info("evangelio_url_inferida url=%s", _strip_url(target))
+        safe_get(driver, target, logger, "evangelio_santo_inferida")
+        cur = _strip_url(driver.current_url)
+        if "/espiritualidad/evangelios" in cur and "dios-hoy" not in cur:
+            logger.warning(
+                "pagina_incorrecta_evangelios_listado intento=inferida url=%s start_url=%s",
+                cur,
+                start_url_stripped,
+            )
+            _reset_context("inferida_wrong_page")
+        elif _is_not_found_page(driver):
+            logger.warning("evangelio_url_inferida_404 url=%s", _strip_url(driver.current_url))
+            _reset_context("inferida_404")
+        else:
+            try:
+                _wait_for_evangelio_dios_hoy_page(driver, EVANGELIO_TIMEOUT)
+                return
+            except TimeoutException:
+                logger.warning("no_se_confirmo_evangelio intento=inferida url=%s", _strip_url(driver.current_url))
+                _reset_context("inferida_timeout")
+
     candidates = [
-        (By.CSS_SELECTOR, "main a[href*='evangelios-y-santo']"),
+        (By.XPATH, "//main//a[contains(@href,'dios-hoy') and contains(@href,'evangelios-y-santo') and not(ancestor::aside)]"),
+        (By.XPATH, "//main//a[contains(@href,'dios-hoy') and (contains(@href,'evangel') or contains(@href,'santo')) and not(ancestor::aside)]"),
         (By.XPATH, "//*[not(ancestor::aside)]//*[self::a or self::button or self::span][contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'evangelio') and contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'santo')]"),
     ]
+
     last = None
-    for by, sel in candidates:
+    for idx, (by, sel) in enumerate(candidates, start=1):
         try:
-            el = wait.until(EC.element_to_be_clickable((by, sel)))
+            el = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((by, sel)))
             safe_click(driver, el)
-            wait.until(EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']")))
+
+            cur = _strip_url(driver.current_url)
+            if "/espiritualidad/evangelios" in cur and "dios-hoy" not in cur:
+                logger.warning(
+                    "pagina_incorrecta_evangelios_listado intento=%s url=%s start_url=%s",
+                    idx,
+                    cur,
+                    start_url_stripped,
+                )
+                _reset_context(f"wrong_page_{idx}")
+                continue
+            if _is_not_found_page(driver):
+                logger.warning(
+                    "pagina_404_evangelio intento=%s url=%s start_url=%s",
+                    idx,
+                    _strip_url(driver.current_url),
+                    start_url_stripped,
+                )
+                _reset_context(f"404_{idx}")
+                continue
+
+            _wait_for_evangelio_dios_hoy_page(driver, EVANGELIO_TIMEOUT)
             return
         except TimeoutException as exc:
             last = exc
-    dump_debug_artifacts(driver, logger, 'open_evangelio_santo')
-    raise last if last else TimeoutException('No se pudo abrir Evangelio y santo.')
+            logger.warning("no_se_confirmo_evangelio intento=%s url=%s", idx, _strip_url(driver.current_url))
+            _log_candidate_evangelio_links(driver, logger)
+            _reset_context(f"timeout_{idx}")
+
+    dump_debug_artifacts(driver, logger, "open_evangelio_santo")
+    raise last if last else TimeoutException("No se pudo abrir Evangelio y santo.")
 
 
 def find_evangelio_link(driver):
@@ -579,7 +710,7 @@ def main():
         safe_click(driver, day_button)
         # 7. Acceder a "Evangelio y santo"
         log_phase(logger, "abrir_evangelio_santo")
-        open_evangelio_santo(driver, logger)
+        open_evangelio_santo(driver, wait, logger, today)
 
         # 8. Seleccionar el evangelio actual y habilitar "Editar reflexion"
         editor = find_visible_by_css(driver, "div[contenteditable='true']")
