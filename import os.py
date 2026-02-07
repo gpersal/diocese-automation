@@ -207,20 +207,29 @@ def find_day_button(driver, wait, day):
 
 def infer_evangelio_url(driver):
     """
-    Try to infer the *day-specific* 'Evangelio y santo' URL from the Dios Hoy DOM.
-    Prefer links that include 'dios-hoy' to avoid landing on the global /espiritualidad/evangelios list.
+    Infer the day-specific 'Evangelio y santo' URL from visible anchors in Dios Hoy.
+
+    Important: do NOT regex page_source; Next.js pages often embed notFound/error payloads and
+    route strings in scripts that are not actually navigable. We only trust real <a href=...>.
     """
-    source = driver.page_source or ""
-    patterns = [
-        r"href=[\"']([^\"']*dios-hoy[^\"']*evangelios-y-santo[^\"']*)[\"']",
-        r"href=[\"']([^\"']*dios-hoy[^\"']*(?:evangelio|santo)[^\"']*)[\"']",
-        r"href=[\"']([^\"']*evangelios-y-santo[^\"']*)[\"']",
-    ]
-    for pat in patterns:
-        match = re.search(pat, source, flags=re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return None
+    anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='evangelios-y-santo']")
+    candidates = []
+    for a in anchors:
+        try:
+            if not a.is_displayed():
+                continue
+            if a.find_elements(By.XPATH, "ancestor::aside"):
+                continue
+            href = (a.get_attribute("href") or "").strip()
+            if not href:
+                continue
+            candidates.append(href)
+        except WebDriverException:
+            continue
+    for href in candidates:
+        if "dios-hoy" in href:
+            return href
+    return candidates[0] if candidates else None
 
 def _strip_url(url):
     try:
@@ -230,17 +239,23 @@ def _strip_url(url):
         return url
 
 def _is_not_found_page(driver):
+    # Avoid false-positives from Next.js serialized payloads in <script>.
     try:
-        title = (driver.title or "").lower()
-        if "404" in title and "not" in title and "found" in title:
+        title = (driver.title or "").strip()
+        if title.startswith("404"):
             return True
     except WebDriverException:
         pass
     try:
-        src = driver.page_source or ""
-        return "This page could not be found" in src or "404: This page could not be found" in src
+        text = driver.execute_script("return (document.body && document.body.innerText) || ''") or ""
+        text = text.strip()
+        if "This page could not be found" in text:
+            return True
+        if text.startswith("404") and "could not be found" in text:
+            return True
     except WebDriverException:
-        return False
+        pass
+    return False
 
 def _wait_for_evangelio_dios_hoy_page(driver, timeout):
     local_wait = WebDriverWait(driver, timeout)
@@ -291,34 +306,63 @@ def open_evangelio_santo(driver, wait, logger, day):
         safe_get(driver, DIOS_HOY_URL, logger, f"dios_hoy_reset_{tag}")
         day_button = find_day_button(driver, wait, day)
         safe_click(driver, day_button)
+        # Give the page a moment to update links after selecting the day.
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "main a[href*='evangelios-y-santo']"))
+            )
+        except TimeoutException:
+            pass
 
     inferred = infer_evangelio_url(driver)
     if inferred:
         target = inferred
         if target.startswith("/"):
             target = urljoin(DIOS_HOY_URL, target)
-        logger.info("evangelio_url_inferida url=%s", _strip_url(target))
-        safe_get(driver, target, logger, "evangelio_santo_inferida")
-        cur = _strip_url(driver.current_url)
-        if "/espiritualidad/evangelios" in cur and "dios-hoy" not in cur:
-            logger.warning(
-                "pagina_incorrecta_evangelios_listado intento=inferida url=%s start_url=%s",
-                cur,
-                start_url_stripped,
-            )
-            _reset_context("inferida_wrong_page")
-        elif _is_not_found_page(driver):
-            logger.warning("evangelio_url_inferida_404 url=%s", _strip_url(driver.current_url))
-            _reset_context("inferida_404")
-        else:
+
+        targets = [target]
+        # Heuristic fallbacks: some installations expose different subroutes.
+        if "/evangelios-y-santo/evangelium" in target:
+            base = target.replace("/evangelios-y-santo/evangelium", "/evangelios-y-santo")
+            targets = [
+                base,
+                base + "/evangelios",
+                base + "/evangelio",
+                target,
+            ]
+
+        opened = False
+        for t in targets:
+            logger.info("evangelio_url_inferida url=%s", _strip_url(t))
+            safe_get(driver, t, logger, "evangelio_santo_inferida")
+            if _is_not_found_page(driver):
+                logger.warning("evangelio_url_inferida_404 url=%s", _strip_url(driver.current_url))
+                continue
             try:
                 _wait_for_evangelio_dios_hoy_page(driver, EVANGELIO_TIMEOUT)
-                return
+                opened = True
+                break
             except TimeoutException:
                 logger.warning("no_se_confirmo_evangelio intento=inferida url=%s", _strip_url(driver.current_url))
-                _reset_context("inferida_timeout")
+                continue
+
+        if not opened:
+            _reset_context("inferida_fallida")
+
+        else:
+            cur = _strip_url(driver.current_url)
+            if "/espiritualidad/evangelios" in cur and "dios-hoy" not in cur:
+                logger.warning(
+                    "pagina_incorrecta_evangelios_listado intento=inferida url=%s start_url=%s",
+                    cur,
+                    start_url_stripped,
+                )
+                _reset_context("inferida_wrong_page")
+            else:
+                return
 
     candidates = [
+        (By.CSS_SELECTOR, "main a[href*='evangelios-y-santo']"),
         (By.XPATH, "//main//a[contains(@href,'dios-hoy') and contains(@href,'evangelios-y-santo') and not(ancestor::aside)]"),
         (By.XPATH, "//main//a[contains(@href,'dios-hoy') and (contains(@href,'evangel') or contains(@href,'santo')) and not(ancestor::aside)]"),
         (By.XPATH, "//*[not(ancestor::aside)]//*[self::a or self::button or self::span][contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'evangelio') and contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'santo')]"),
