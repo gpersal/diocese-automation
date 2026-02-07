@@ -115,6 +115,14 @@ class RedactFilter(logging.Filter):
 def log_phase(logger, message):
     logger.info("fase=%s", message)
 
+def _redact_debug_html(html):
+    if not html:
+        return html
+    # Avoid leaking session/JWT tokens or similar secrets in uploaded artifacts.
+    html = re.sub(r'"token"\s*:\s*"[^"]+"', '"token":"***"', html)
+    html = re.sub(r'eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+', '***', html)
+    return html
+
 def dump_debug_artifacts(driver, logger, label):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe_label = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in label)
@@ -188,6 +196,25 @@ def infer_evangelio_url(driver):
     if not match:
         return None
     return match.group(1)
+def open_evangelio_santo(driver, logger):
+    # Click the day-specific 'Evangelio y santo' entry inside Dios Hoy (not the sidebar).
+    wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
+    candidates = [
+        (By.CSS_SELECTOR, "main a[href*='evangelios-y-santo']"),
+        (By.XPATH, "//*[not(ancestor::aside)]//*[self::a or self::button or self::span][contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'evangelio') and contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'santo')]"),
+    ]
+    last = None
+    for by, sel in candidates:
+        try:
+            el = wait.until(EC.element_to_be_clickable((by, sel)))
+            safe_click(driver, el)
+            wait.until(EC.presence_of_element_located((By.XPATH, "//*[normalize-space()='Evangelios actuales']")))
+            return
+        except TimeoutException as exc:
+            last = exc
+    dump_debug_artifacts(driver, logger, 'open_evangelio_santo')
+    raise last if last else TimeoutException('No se pudo abrir Evangelio y santo.')
+
 
 def find_evangelio_link(driver):
     wait = WebDriverWait(driver, EVANGELIO_TIMEOUT)
@@ -547,51 +574,19 @@ def main():
         log_phase(logger, "seleccionar_dia")
         day_button = find_day_button(driver, wait, today)
         safe_click(driver, day_button)
-
         # 7. Acceder a "Evangelio y santo"
         log_phase(logger, "abrir_evangelio_santo")
-        page_type = None
-        evangelio_link = None
-        for attempt in range(EVANGELIO_RETRIES + 1):
-            current_url = driver.current_url or ""
-            if "/auth/login" in current_url:
-                logger.warning("sesion_expirada url=%s", current_url)
-                do_login(driver, wait, logger)
-                safe_get(driver, DIOS_HOY_URL, logger, "dios_hoy_relogin")
-            target_url = None
-            try:
-                evangelio_link = find_evangelio_link(driver)
-                target_url = evangelio_link.get_attribute("href")
-            except TimeoutException:
-                inferred = infer_evangelio_url(driver)
-                target_url = inferred or EVANGELIO_DIRECT_URL
-                if target_url and target_url.startswith("/"):
-                    target_url = urljoin(DIOS_HOY_URL, target_url)
-                logger.warning("no_se_encontro_enlace_evangelio intento=%s url=%s usando_url_directa=%s", attempt + 1, driver.current_url, target_url)
-                dump_debug_artifacts(driver, logger, f"evangelio_link_{attempt + 1}")
-            safe_get(driver, target_url, logger, f"evangelio_santo_{attempt + 1}")
-            try:
-                page_type = detect_evangelio_page(driver)
-                if page_type == "list":
-                    edit_link = find_first_evangelio_edit_link(driver)
-                    log_evangelio_card_info(logger, edit_link)
-                    safe_click(driver, edit_link)
-                break
-            except TimeoutException:
-                logger.warning("no_se_confirmo_evangelio intento=%s url=%s", attempt + 1, driver.current_url)
-                dump_debug_artifacts(driver, logger, f"evangelio_section_{attempt + 1}")
-                if attempt < EVANGELIO_RETRIES:
-                    safe_get(driver, DIOS_HOY_URL, logger, f"dios_hoy_reintento_{attempt + 1}")
-                else:
-                    raise
-        if not evangelio_link:
-            logger.warning("no_se_pudo_confirmar_enlace_evangelio url=%s", driver.current_url)
-        
+        open_evangelio_santo(driver, logger)
+
         # 8. Seleccionar el evangelio actual y habilitar "Editar reflexion"
         editor = find_visible_by_css(driver, "div[contenteditable='true']")
         if editor is None:
             log_phase(logger, "seleccionar_evangelio_actual")
-            current_evangelio = find_current_gospel_button(driver, wait)
+            try:
+                current_evangelio = find_current_gospel_button(driver, wait)
+            except TimeoutException:
+                dump_debug_artifacts(driver, logger, 'current_gospel_timeout')
+                raise
             safe_click(driver, current_evangelio)
 
             editar_reflexion_button = find_edit_reflection_button(wait)
