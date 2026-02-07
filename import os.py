@@ -8,6 +8,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse, urljoin, urlsplit, urlunsplit
+import sys
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -95,6 +96,17 @@ def setup_logger():
         secrets = [USERNAME, PASSWORD]
         handler.addFilter(RedactFilter(secrets))
         logger.addHandler(handler)
+
+    # In GitHub Actions it's much faster to debug if the same log lines also go to stdout.
+    if os.getenv("DIOCESIS_STDOUT_LOG") == "1" or os.getenv("GITHUB_ACTIONS") == "true":
+        has_stream = any(isinstance(h, logging.StreamHandler) for h in logger.handlers)
+        if not has_stream:
+            stream = logging.StreamHandler(stream=sys.stdout)
+            stream.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+            )
+            stream.addFilter(RedactFilter([USERNAME, PASSWORD]))
+            logger.addHandler(stream)
     return logger
 
 class RedactFilter(logging.Filter):

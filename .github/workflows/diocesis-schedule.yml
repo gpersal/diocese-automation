@@ -23,10 +23,10 @@ jobs:
       DIOCESIS_EVANGELIO_TIMEOUT: "60"
       DIOCESIS_EVANGELIO_RETRIES: "1"
       DIOCESIS_LOGIN_TIMEOUT: "60"
-      DIOCESIS_EVANGELIO_URL: "https://admin.diocesisdeneiva.org/espiritualidad/evangelios"
       DIOCESIS_PAGE_LOAD_TIMEOUT: "180"
       DIOCESIS_GET_RETRIES: "3"
       DIOCESIS_GET_RETRY_WAIT: "5"
+      DIOCESIS_STDOUT_LOG: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,6 +44,16 @@ jobs:
       - name: Run script
         run: |
           python "import os.py"
+
+      - name: Print log tail (console)
+        if: always()
+        run: |
+          echo "---- logs dir ----"
+          ls -la logs || true
+          echo "---- diocesis.log (tail) ----"
+          tail -n 250 logs/diocesis.log || true
+          echo "---- debug artifacts ----"
+          ls -la logs | rg -n "debug-" || true
 
       - name: Upload logs
         if: always()
