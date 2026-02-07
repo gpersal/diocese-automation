@@ -55,31 +55,90 @@ def get_latest_video_url():
         raise RuntimeError(f"Error al leer el feed de YouTube: {feed.bozo_exception}")
     if not feed.entries:
         raise RuntimeError("El feed de YouTube no tiene entradas.")
+
+    def _norm(text: str) -> str:
+        """Normalize titles to make matching robust across emojis/accents/styled unicode."""
+        if not text:
+            return ""
+        # NFKC helps with compatibility chars (e.g. mathematical bold letters).
+        text = unicodedata.normalize("NFKC", text)
+        # Strip accents.
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        # Lowercase in a unicode-aware way.
+        text = text.casefold()
+        # Drop punctuation/emojis/symbols; keep alnum and spaces.
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _parse_csv_tokens(raw: str):
+        if not raw:
+            return []
+        parts = [p.strip() for p in raw.split(",")]
+        # Normalize tokens as well so callers can include accents/punctuation.
+        return [_norm(p) for p in parts if _norm(p)]
+
+    def _entry_ts(entry):
+        # Prefer published time; fallback to updated.
+        for attr in ("published_parsed", "updated_parsed"):
+            value = getattr(entry, attr, None)
+            if value:
+                try:
+                    return time.mktime(value)
+                except (TypeError, OverflowError, OSError, ValueError):
+                    pass
+        return None
+
     title_pattern = os.getenv("DIOCESIS_VIDEO_TITLE_REGEX", r"gotitas\\s+de\\s+esperanza")
     try:
         title_re = re.compile(title_pattern, re.IGNORECASE)
     except re.error as exc:
         raise RuntimeError("DIOCESIS_VIDEO_TITLE_REGEX invalido.") from exc
 
-    def _norm(text):
-        if not text:
-            return ""
-        text = unicodedata.normalize("NFKD", text)
-        text = "".join(ch for ch in text if not unicodedata.combining(ch))
-        return text.lower()
+    # Optional stable matching knobs:
+    # - DIOCESIS_VIDEO_TITLE_REQUIRE: CSV tokens that must all be present.
+    # - DIOCESIS_VIDEO_TITLE_FORBID: CSV tokens that must NOT be present.
+    required_tokens = _parse_csv_tokens(os.getenv("DIOCESIS_VIDEO_TITLE_REQUIRE", ""))
+    forbidden_tokens = _parse_csv_tokens(os.getenv("DIOCESIS_VIDEO_TITLE_FORBID", ""))
 
     logger = logging.getLogger("diocesis")
     chosen = None
-    for entry in feed.entries:
+    # Sort by published/updated time to avoid relying on feed order.
+    indexed = []
+    for idx, entry in enumerate(feed.entries):
+        ts = _entry_ts(entry)
+        indexed.append((ts if ts is not None else -1, -idx, entry))
+    indexed.sort(reverse=True)
+    sorted_entries = [entry for _, __, entry in indexed]
+
+    for entry in sorted_entries:
         title = getattr(entry, "title", "") or ""
-        if title_re.search(_norm(title)):
+        normalized = _norm(title)
+        if required_tokens and not all(tok in normalized for tok in required_tokens):
+            continue
+        if forbidden_tokens and any(tok in normalized for tok in forbidden_tokens):
+            continue
+        if title_re.search(normalized):
             chosen = entry
-            logger.info("video_seleccionado titulo=%s", title)
+            logger.info(
+                "video_seleccionado titulo=%s require=%s forbid=%s regex=%s",
+                title,
+                required_tokens,
+                forbidden_tokens,
+                title_pattern,
+            )
             break
     if chosen is None:
-        chosen = feed.entries[0]
+        chosen = sorted_entries[0]
         title = getattr(chosen, "title", "") or ""
-        logger.info("video_seleccionado_fallback titulo=%s", title)
+        logger.info(
+            "video_seleccionado_fallback titulo=%s require=%s forbid=%s regex=%s",
+            title,
+            required_tokens,
+            forbidden_tokens,
+            title_pattern,
+        )
 
     if not getattr(chosen, "link", None):
         raise RuntimeError("La entrada mas reciente no tiene enlace.")

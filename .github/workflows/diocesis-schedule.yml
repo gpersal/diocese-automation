@@ -19,6 +19,9 @@ jobs:
       DIOCESIS_LOG_DIR: ${{ github.workspace }}/logs
       DIOCESIS_LOG_LEVEL: INFO
       DIOCESIS_VIDEO_TITLE_REGEX: "gotitas\\s+de\\s+esperanza"
+      # Stable title tokens to identify the daily reflection series.
+      # Avoid day-of-week/date words that change frequently.
+      DIOCESIS_VIDEO_TITLE_REQUIRE: "gotitas,esperanza,reflexion"
       DIOCESIS_VIDEO_WIDTH: "840"
       DIOCESIS_VIDEO_HEIGHT: "472"
       DIOCESIS_EVANGELIO_TIMEOUT: "60"
@@ -54,7 +57,7 @@ jobs:
           echo "---- diocesis.log (tail) ----"
           tail -n 250 logs/diocesis.log || true
           echo "---- debug artifacts ----"
-          ls -la logs | rg -n "debug-" || true
+          ls -la logs | grep -n "debug-" || true
 
       - name: Upload logs
         if: always()
