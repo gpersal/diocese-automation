@@ -1,0 +1,39 @@
+name: diocesis-fase2-evangelio
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "YYYY-MM-DD (opcional; por defecto hoy en America/Bogota)"
+        required: false
+        type: string
+      days_ahead:
+        description: "Cantidad de dias a preparar (default: 3)"
+        required: false
+        default: "3"
+        type: string
+
+jobs:
+  fase2-evangelio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TZ: America/Bogota
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run (stub)
+        run: |
+          python scripts/fase2_evangelio.py \
+            --start-date "${{ inputs.start_date }}" \
+            --days-ahead "${{ inputs.days_ahead }}"

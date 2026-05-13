@@ -1,0 +1,39 @@
+name: diocesis-fase1-santos
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "YYYY-MM-DD (opcional; por defecto hoy en America/Bogota)"
+        required: false
+        type: string
+      days_ahead:
+        description: "Cantidad de dias a preparar (default: 15)"
+        required: false
+        default: "15"
+        type: string
+
+jobs:
+  fase1-santos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TZ: America/Bogota
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run (stub)
+        run: |
+          python scripts/fase1_santos.py \
+            --start-date "${{ inputs.start_date }}" \
+            --days-ahead "${{ inputs.days_ahead }}"
