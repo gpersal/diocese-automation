@@ -16,6 +16,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from urllib3.exceptions import MaxRetryError, ReadTimeoutError
 
 # 1. Cargar credenciales y URLs desde variables de entorno
 USERNAME = os.getenv("DIOCESIS_USERNAME")
@@ -43,6 +44,7 @@ VIDEO_WIDTH = int(os.getenv("DIOCESIS_VIDEO_WIDTH", "840"))
 VIDEO_HEIGHT = int(os.getenv("DIOCESIS_VIDEO_HEIGHT", "472"))
 LOG_DIR = os.getenv("DIOCESIS_LOG_DIR", "/Users/gabops/Downloads/Diocesis/logs")
 LOG_LEVEL = os.getenv("DIOCESIS_LOG_LEVEL", "INFO").upper()
+NAVIGATION_RETRY_EXCEPTIONS = (TimeoutException, WebDriverException, ReadTimeoutError, MaxRetryError, TimeoutError)
 
 def get_latest_video_url():
     """Devuelve la URL del vídeo más reciente del feed.
@@ -236,7 +238,7 @@ def dump_debug_artifacts(driver, logger, label):
         logger.warning("no_se_pudo_guardar_screenshot error=%s", exc)
     try:
         with open(f"{base}.html", "w", encoding="utf-8") as handle:
-            handle.write(driver.page_source or "")
+            handle.write(_redact_debug_html(driver.page_source or ""))
     except OSError as exc:
         logger.warning("no_se_pudo_guardar_html error=%s", exc)
 
@@ -247,12 +249,19 @@ def safe_get(driver, url, logger, label=None):
             logger.info("navegar url=%s intento=%s", label or url, attempt)
             driver.get(url)
             return
-        except (TimeoutException, WebDriverException) as exc:
+        except NAVIGATION_RETRY_EXCEPTIONS as exc:
+            logger.warning(
+                "navegacion_fallo url=%s intento=%s/%s error=%s",
+                label or url,
+                attempt,
+                max_attempts,
+                type(exc).__name__,
+            )
             if attempt >= max_attempts:
                 raise
             try:
                 driver.execute_script("window.stop();")
-            except WebDriverException:
+            except Exception:
                 pass
             time.sleep(GET_RETRY_WAIT)
 
@@ -354,6 +363,18 @@ def _wait_for_evangelio_dios_hoy_page(driver, timeout):
         )
     )
 
+def wait_for_day_content_hint(driver, timeout=8):
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "main a[href*='evangelios-y-santo']")),
+                EC.presence_of_element_located((By.XPATH, "//*[not(ancestor::aside)]//*[contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'evangelio') and contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),'santo')]")),
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div[contenteditable='true']")),
+            )
+        )
+    except TimeoutException:
+        pass
+
 def _log_candidate_evangelio_links(driver, logger, limit=25):
     try:
         links = driver.find_elements(By.CSS_SELECTOR, "a[href]")
@@ -394,13 +415,7 @@ def open_evangelio_santo(driver, wait, logger, day):
         safe_get(driver, DIOS_HOY_URL, logger, f"dios_hoy_reset_{tag}")
         day_button = find_day_button(driver, wait, day)
         safe_click(driver, day_button)
-        # Give the page a moment to update links after selecting the day.
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "main a[href*='evangelios-y-santo']"))
-            )
-        except TimeoutException:
-            pass
+        wait_for_day_content_hint(driver)
 
     inferred = infer_evangelio_url(driver)
     if inferred:
@@ -852,6 +867,7 @@ def main():
         log_phase(logger, "seleccionar_dia")
         day_button = find_day_button(driver, wait, today)
         safe_click(driver, day_button)
+        wait_for_day_content_hint(driver)
         # 7. Acceder a "Evangelio y santo"
         log_phase(logger, "abrir_evangelio_santo")
         open_evangelio_santo(driver, wait, logger, today)
