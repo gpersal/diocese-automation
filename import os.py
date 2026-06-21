@@ -26,6 +26,7 @@ DIOS_HOY_URL = "https://admin.diocesisdeneiva.org/espiritualidad/dios-hoy"
 YOUTUBE_FEED = "https://www.youtube.com/feeds/videos.xml?channel_id=UCydLv78Ybqcg2y74FR2VYIw"
 DEFAULT_TIMEOUT = int(os.getenv("DIOCESIS_TIMEOUT", "15"))
 PAGE_LOAD_TIMEOUT = int(os.getenv("DIOCESIS_PAGE_LOAD_TIMEOUT", "90"))
+PAGE_LOAD_STRATEGY = os.getenv("DIOCESIS_PAGE_LOAD_STRATEGY", "eager").strip().lower()
 GET_RETRIES = int(os.getenv("DIOCESIS_GET_RETRIES", "2"))
 GET_RETRY_WAIT = float(os.getenv("DIOCESIS_GET_RETRY_WAIT", "3"))
 LOGIN_TIMEOUT = int(os.getenv("DIOCESIS_LOGIN_TIMEOUT", "45"))
@@ -45,6 +46,7 @@ VIDEO_HEIGHT = int(os.getenv("DIOCESIS_VIDEO_HEIGHT", "472"))
 LOG_DIR = os.getenv("DIOCESIS_LOG_DIR", "/Users/gabops/Downloads/Diocesis/logs")
 LOG_LEVEL = os.getenv("DIOCESIS_LOG_LEVEL", "INFO").upper()
 NAVIGATION_RETRY_EXCEPTIONS = (TimeoutException, WebDriverException, ReadTimeoutError, MaxRetryError, TimeoutError)
+VALID_PAGE_LOAD_STRATEGIES = {"normal", "eager", "none"}
 
 def get_latest_video_url():
     """Devuelve la URL del vídeo más reciente del feed.
@@ -242,6 +244,26 @@ def dump_debug_artifacts(driver, logger, label):
     except OSError as exc:
         logger.warning("no_se_pudo_guardar_html error=%s", exc)
 
+def _navigation_reached_target(driver, target_url):
+    try:
+        current_url = driver.current_url
+    except WebDriverException:
+        return False, ""
+    if not current_url or current_url.startswith("about:"):
+        return False, current_url
+    try:
+        current = urlsplit(current_url)
+        target = urlsplit(target_url)
+    except ValueError:
+        return False, current_url
+    current_path = current.path.rstrip("/") or "/"
+    target_path = target.path.rstrip("/") or "/"
+    return (
+        current.scheme in {"http", "https"}
+        and current.netloc == target.netloc
+        and current_path == target_path
+    ), current_url
+
 def safe_get(driver, url, logger, label=None):
     max_attempts = max(1, GET_RETRIES + 1)
     for attempt in range(1, max_attempts + 1):
@@ -257,12 +279,22 @@ def safe_get(driver, url, logger, label=None):
                 max_attempts,
                 type(exc).__name__,
             )
-            if attempt >= max_attempts:
-                raise
             try:
                 driver.execute_script("window.stop();")
             except Exception:
                 pass
+            reached, current_url = _navigation_reached_target(driver, url)
+            if reached:
+                logger.warning(
+                    "navegacion_timeout_continuando url=%s intento=%s/%s current_url=%s",
+                    label or url,
+                    attempt,
+                    max_attempts,
+                    current_url,
+                )
+                return
+            if attempt >= max_attempts:
+                raise
             time.sleep(GET_RETRY_WAIT)
 
 def safe_click(driver, element):
@@ -833,6 +865,10 @@ def main():
         datetime.utcnow(),
     )
     logger.info("inicio_ejecucion")
+    if PAGE_LOAD_STRATEGY not in VALID_PAGE_LOAD_STRATEGIES:
+        raise RuntimeError(
+            "DIOCESIS_PAGE_LOAD_STRATEGY debe ser normal, eager o none."
+        )
 
     # 2. Obtener el video mas reciente
     log_phase(logger, "obtener_video")
@@ -846,8 +882,14 @@ def main():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.page_load_strategy = "eager"
+    options.page_load_strategy = PAGE_LOAD_STRATEGY
     options.add_argument("--window-size=1400,900")
+    logger.info(
+        "browser_config page_load_strategy=%s page_load_timeout=%s get_retries=%s",
+        PAGE_LOAD_STRATEGY,
+        PAGE_LOAD_TIMEOUT,
+        GET_RETRIES,
+    )
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     wait = WebDriverWait(driver, DEFAULT_TIMEOUT)
